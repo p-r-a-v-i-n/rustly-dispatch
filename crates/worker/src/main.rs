@@ -3,6 +3,8 @@ use clap::Parser;
 use redis::Commands;
 use serde_json::json;
 use std::collections::HashMap;
+use std::thread;
+use std::time::Duration;
 use taskforge_core::{TaskResult, TaskSpec, TaskStatus};
 
 #[derive(Parser, Debug)]
@@ -59,37 +61,93 @@ fn main() -> anyhow::Result<()> {
             let execution = execute_task(&task, &registry);
 
             let finished_at = Some(Utc::now());
-            let result = match execution {
-                Ok(output) => TaskResult {
-                    id: task.id,
-                    status: TaskStatus::Succeeded,
-                    started_at: running.started_at,
-                    finished_at,
-                    output: Some(output),
-                    error: None,
-                },
-                Err(error) => TaskResult {
-                    id: task.id,
-                    status: TaskStatus::Failed,
-                    started_at: running.started_at,
-                    finished_at,
-                    output: None,
-                    error: Some(error),
-                },
-            };
-            let result_payload = serde_json::to_string(&result)?;
-            let _: String = conn.set(result_key, result_payload)?;
+            match execution {
+                Ok(output) => {
+                    let result = TaskResult {
+                        id: task.id,
+                        status: TaskStatus::Succeeded,
+                        started_at: running.started_at,
+                        finished_at,
+                        output: Some(output),
+                        error: None,
+                    };
+                    let result_payload = serde_json::to_string(&result)?;
+                    let _: String = conn.set(result_key, result_payload)?;
+                }
+                Err(TaskFailure::UnknownTask(name)) => {
+                    let result = TaskResult {
+                        id: task.id,
+                        status: TaskStatus::Failed,
+                        started_at: running.started_at,
+                        finished_at,
+                        output: None,
+                        error: Some(format!("Unknown task: {}", name)),
+                    };
+                    let result_payload = serde_json::to_string(&result)?;
+                    let _: String = conn.set(result_key, result_payload)?;
+                }
+                Err(TaskFailure::Execution(error)) => {
+                    let should_retry = task.retry.attempt < task.retry.max_attempts;
+                    if should_retry {
+                        let result = TaskResult {
+                            id: task.id,
+                            status: TaskStatus::Retrying,
+                            started_at: running.started_at,
+                            finished_at,
+                            output: None,
+                            error: Some(error.clone()),
+                        };
+                        let result_payload = serde_json::to_string(&result)?;
+                        let _: String = conn.set(&result_key, result_payload)?;
+
+                        let backoff = task.retry.backoff_seconds * (task.retry.attempt as u64 + 1);
+                        if backoff > 0 {
+                            thread::sleep(Duration::from_secs(backoff));
+                        }
+
+                        let mut retry_task = task.clone();
+                        retry_task.retry.attempt += 1;
+                        retry_task.created_at = Utc::now();
+                        retry_task.eta = None;
+                        let retry_payload = serde_json::to_string(&retry_task)?;
+
+                        let _id: String = redis::cmd("XADD")
+                            .arg(&cli.stream)
+                            .arg("*")
+                            .arg("payload")
+                            .arg(retry_payload)
+                            .query(&mut conn)?;
+                    } else {
+                        let result = TaskResult {
+                            id: task.id,
+                            status: TaskStatus::Failed,
+                            started_at: running.started_at,
+                            finished_at,
+                            output: None,
+                            error: Some(error),
+                        };
+                        let result_payload = serde_json::to_string(&result)?;
+                        let _: String = conn.set(result_key, result_payload)?;
+                    }
+                }
+            }
         }
     }
+}
+
+#[derive(Debug)]
+enum TaskFailure {
+    UnknownTask(String),
+    Execution(String),
 }
 
 fn execute_task(
     task: &TaskSpec,
     registry: &HashMap<String, fn(&TaskSpec) -> Result<serde_json::Value, String>>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, TaskFailure> {
     match registry.get(&task.name) {
-        Some(handler) => handler(task),
-        None => Err(format!("Unknown task: {}", task.name)),
+        Some(handler) => handler(task).map_err(TaskFailure::Execution),
+        None => Err(TaskFailure::UnknownTask(task.name.clone())),
     }
 }
 
