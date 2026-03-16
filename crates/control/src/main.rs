@@ -36,6 +36,14 @@ enum CommandsCli {
         #[arg(long, default_value = "taskforge:result:")]
         result_prefix: String,
     },
+    Result {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        broker_url: String,
+        #[arg(long, default_value = "taskforge:result:")]
+        result_prefix: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -106,6 +114,24 @@ fn main() -> anyhow::Result<()> {
             let _: String = conn.set(result_key, result_payload)?;
 
             println!("Enqueued task {} to stream {}", task.id, stream);
+        }
+        CommandsCli::Result {
+            id,
+            broker_url,
+            result_prefix,
+        } => {
+            let mut conn = redis::Client::open(broker_url)?.get_connection()?;
+            let key = format!("{}{}", result_prefix, id);
+            let payload: Option<String> = conn.get(key)?;
+            match payload {
+                Some(value) => {
+                    let result: TaskResult = serde_json::from_str(&value)?;
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
+                None => {
+                    println!("Result not found");
+                }
+            }
         }
     }
 
