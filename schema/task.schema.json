@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TaskSpec",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "args",
+    "kwargs",
+    "queue",
+    "retry",
+    "created_at"
+  ],
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string", "minLength": 1 },
+    "args": { "type": "array" },
+    "kwargs": { "type": "object" },
+    "queue": { "type": "string", "minLength": 1 },
+    "retry": {
+      "type": "object",
+      "required": ["max_attempts", "attempt", "backoff_seconds"],
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 0 },
+        "attempt": { "type": "integer", "minimum": 0 },
+        "backoff_seconds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "eta": { "type": ["string", "null"], "format": "date-time" },
+    "timeout_seconds": { "type": ["integer", "null"], "minimum": 1 },
+    "idempotency_key": { "type": ["string", "null"] },
+    "created_at": { "type": "string", "format": "date-time" }
+  }
+}

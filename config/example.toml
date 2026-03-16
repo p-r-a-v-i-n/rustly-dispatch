@@ -1,0 +1,15 @@
+[broker]
+kind = "redis-streams"
+url = "redis://127.0.0.1:6379"
+stream = "celeryrs.tasks"
+consumer_group = "celeryrs-workers"
+
+[worker]
+name = "worker-1"
+concurrency = 4
+prefetch = 32
+
+[result]
+kind = "redis"
+url = "redis://127.0.0.1:6379"
+key_prefix = "celeryrs:result:"
